@@ -61,10 +61,25 @@ Wire it into your agent's session-start hook and every session begins with its c
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -d node_modules ] || npm install >/dev/null 2>&1; wtdev up 2>/dev/null || true",
+            "timeout": 180,
+            "statusMessage": "Starting dev server for this worktree"
+          }
+        ]
+      }
     ]
   }
 }
 ```
+
+Both hooks matter. `SessionStart` covers the checkout a session launches in — but a worktree created *mid-session* (Claude Code's `EnterWorktree`) never re-fires it, so without the `PostToolUse` hook those worktrees silently run without a server until someone notices. The hook runs after the session has switched into the new worktree, so `wtdev up` picks up that worktree's port.
 
 The `npm install` guard makes fresh worktrees self-sufficient — `git worktree add` doesn't bring node_modules along. If you vendor the script instead of installing it globally, use `sh scripts/wtdev up`.
 
