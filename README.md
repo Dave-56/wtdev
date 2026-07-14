@@ -41,11 +41,32 @@ The easiest setup is to route your dev script through it, so agents and humans a
 
 It also copies gitignored env files (`.env`, `.env.local` by default) from the main checkout into fresh worktrees, since those never come along with `git worktree add`.
 
-`wtdev up` is `run` for automation: it starts the server in the background (logging to `.wtdev.log`) only if the checkout's port isn't already serving, and prints the URL either way. Wire it into an agent's session-start hook and every session begins with its dev URL ready:
+## Zero-touch dev servers for agent sessions
+
+`wtdev up` is `run` for automation: it starts the server in the background (logging to `.wtdev.log` — add it to `.gitignore`) only if the checkout's port isn't already serving, and prints the URL either way. Because it's idempotent, any number of sessions can call it without double-starting servers.
+
+Wire it into your agent's session-start hook and every session begins with its checkout's dev URL already in context. For Claude Code, put this in `.claude/settings.json` at the repo root:
 
 ```json
-{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh scripts/wtdev up" } ] } ] } }
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -d node_modules ] || npm install >/dev/null 2>&1; wtdev up 2>/dev/null || true",
+            "timeout": 180,
+            "statusMessage": "Starting dev server for this checkout"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
+
+The `npm install` guard makes fresh worktrees self-sufficient — `git worktree add` doesn't bring node_modules along. If you vendor the script instead of installing it globally, use `sh scripts/wtdev up`.
 
 ## Dashboard
 
