@@ -1,0 +1,214 @@
+#!/bin/sh
+# wtdev — one dev server per git worktree, no port collisions.
+#
+# The main checkout always gets the base port (default 3000). Every linked
+# worktree gets a deterministic port hashed from its path (default 3001-3999),
+# so the same worktree always comes back on the same port and parallel
+# worktrees never fight over 3000.
+#
+#   wtdev run [cmd...]   start the dev server on this checkout's port
+#   wtdev port           print this checkout's port
+#   wtdev list           list all worktrees with branch + port
+#   wtdev dashboard      generate a live-status HTML dashboard
+#
+# Config (env vars):
+#   PORT                overrides everything for `run` and `port`
+#   WTDEV_BASE_PORT     base port for the main checkout (default 3000)
+#   WTDEV_PORT_RANGE    size of the worktree port range (default 999)
+#   WTDEV_CMD           dev command template; {port} is substituted, PORT is
+#                       exported either way (default: `npm run dev`)
+#   WTDEV_ENV_FILES     gitignored env files to borrow from the main checkout
+#                       (default: ".env .env.local")
+#
+# Pretty URLs: if localias (https://github.com/peterldowns/localias) is
+# installed and its daemon is running, each worktree is also served at
+# http://<worktree-name>.localhost
+
+set -eu
+
+usage() {
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+die() {
+  echo "wtdev: $*" >&2
+  exit 1
+}
+
+# Absolute path to the main checkout's root, from anywhere in any worktree.
+main_root() {
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || die "not inside a git repository"
+  dirname "$common"
+}
+
+# Root of the worktree we're currently in.
+this_root() {
+  git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
+}
+
+# port_for <worktree-path> <main-root>
+port_for() {
+  base="${WTDEV_BASE_PORT:-3000}"
+  range="${WTDEV_PORT_RANGE:-999}"
+  if [ "$1" = "$2" ]; then
+    echo "$base"
+  else
+    hash=$(printf '%s' "$1" | cksum | cut -d' ' -f1)
+    echo $((base + 1 + hash % range))
+  fi
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Emit "path" lines, main checkout first, one per worktree.
+worktree_paths() {
+  git worktree list --porcelain | sed -n 's/^worktree //p'
+}
+
+cmd_port() {
+  if [ -n "${PORT:-}" ]; then
+    echo "$PORT"
+  else
+    port_for "$(this_root)" "$(main_root)"
+  fi
+}
+
+cmd_list() {
+  root=$(main_root)
+  worktree_paths | while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
+    port=$(port_for "$dir" "$root")
+    printf '%-30s %-30s %s\n' "$(basename "$dir")" "${branch:-(detached)}" "$port"
+  done
+}
+
+cmd_run() {
+  root=$(main_root)
+  here=$(this_root)
+  port=$(cmd_port)
+  name=$(basename "$here")
+
+  # Worktrees start without gitignored env files; borrow them from the main
+  # checkout so the app boots without manual copying.
+  if [ "$here" != "$root" ]; then
+    for f in ${WTDEV_ENV_FILES:-.env .env.local}; do
+      if [ -f "$root/$f" ] && [ ! -e "$here/$f" ]; then
+        cp "$root/$f" "$here/$f"
+        echo "wtdev: copied $f from main checkout"
+      fi
+    done
+  fi
+
+  if [ "$port" -ne "${WTDEV_BASE_PORT:-3000}" ] && command -v localias >/dev/null 2>&1; then
+    if localias set "$name.localhost" "$port" >/dev/null 2>&1; then
+      echo "wtdev: http://$name.localhost -> http://localhost:$port"
+    fi
+  fi
+
+  if [ $# -gt 0 ]; then
+    cmd="$*"
+  else
+    cmd="${WTDEV_CMD:-npm run dev}"
+  fi
+  cmd=$(printf '%s' "$cmd" | sed "s/{port}/$port/g")
+
+  echo "wtdev: http://localhost:$port ($name)"
+  PORT="$port" exec sh -c "$cmd"
+}
+
+cmd_dashboard() {
+  root=$(main_root)
+  base="${WTDEV_BASE_PORT:-3000}"
+
+  out="${1:-}"
+  if [ -z "$out" ]; then
+    # Inside public/ it's served by the dev server itself, which keeps the
+    # live port probing same-origin-friendly; file:// pages can't fetch.
+    if [ -d "$root/public" ]; then out="$root/public/worktrees.html"
+    else out="$root/worktrees.html"; fi
+  fi
+
+  project=$(basename "$root")
+  rows=""
+  while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    [ "$dir" = "$root" ] && name="main checkout"
+    branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
+    desc=$(git -C "$dir" log -1 --format=%s 2>/dev/null || true)
+    port=$(port_for "$dir" "$root")
+    alias=""
+    [ "$port" -ne "$base" ] && alias="$(basename "$dir").localhost"
+    rows="$rows{\"name\":\"$(json_escape "$name")\",\"branch\":\"$(json_escape "$branch")\",\"desc\":\"$(json_escape "$desc")\",\"port\":$port,\"alias\":\"$alias\"},"
+  done <<EOF
+$(worktree_paths)
+EOF
+
+  cat > "$out" <<EOF
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$project worktrees</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, system-ui, sans-serif; max-width: 860px; margin: 3rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; } h1 small { font-weight: normal; opacity: .55; margin-left: .5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid rgba(128,128,128,.25); }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .55; }
+  .dot { display: inline-block; width: .6em; height: .6em; border-radius: 50%; margin-right: .45em; background: #999; }
+  .up .dot { background: #34c759; } .down .dot { background: #ff3b30; }
+  .down td { opacity: .55; }
+  .desc { opacity: .75; font-size: .9em; }
+  code { font-size: .85em; }
+  a { color: inherit; }
+</style>
+<h1>$project worktrees <small>status probed live &middot; regenerate on add/remove</small></h1>
+<table>
+  <thead><tr><th>checkout</th><th>branch</th><th>last commit</th><th>url</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+const worktrees = [$rows];
+const tbody = document.getElementById('rows');
+for (const w of worktrees) {
+  const tr = document.createElement('tr');
+  const url = 'http://localhost:' + w.port + '/';
+  const links = '<a href="' + url + '">localhost:' + w.port + '</a>' +
+    (w.alias ? ' &middot; <a href="http://' + w.alias + '/">' + w.alias + '</a>' : '');
+  tr.innerHTML = '<td><span class="dot"></span>' + w.name + '</td>' +
+    '<td><code>' + w.branch + '</code></td>' +
+    '<td class="desc">' + w.desc + '</td>' +
+    '<td>' + links + '</td>';
+  tbody.appendChild(tr);
+  w.el = tr;
+}
+async function probe() {
+  await Promise.all(worktrees.map(async w => {
+    try {
+      await fetch('http://localhost:' + w.port + '/', { mode: 'no-cors', signal: AbortSignal.timeout(3000) });
+      w.el.className = 'up';
+    } catch { w.el.className = 'down'; }
+  }));
+}
+probe();
+setInterval(probe, 5000);
+</script>
+EOF
+
+  echo "wtdev: wrote $out"
+}
+
+case "${1:-}" in
+  run) shift; cmd_run "$@" ;;
+  port) cmd_port ;;
+  list) cmd_list ;;
+  dashboard) shift || true; cmd_dashboard "${1:-}" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command: $1 (try wtdev --help)" ;;
+esac
