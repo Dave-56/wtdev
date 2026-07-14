@@ -9,7 +9,9 @@ If you run coding agents (Claude Code, Cursor, etc.) in parallel git worktrees, 
 - main checkout → `3000`
 - every linked worktree → a stable port in `3001–3999`, hashed from its path
 
-Same worktree, same port, every time — across restarts, across agents, with zero coordination and zero state. In the rare case two worktrees hash to the same port, the later one (in `git worktree list` order) simply takes the next free port, so ports stay unique without anything to configure.
+Same worktree, same port, every time — across restarts, across agents, with zero coordination and zero state.
+
+![The wtdev dashboard: every worktree on its own stable port, live status, pretty URLs](docs/dashboard.png) In the rare case two worktrees hash to the same port, the later one (in `git worktree list` order) simply takes the next free port, so ports stay unique without anything to configure.
 
 ## Install
 
