@@ -24,12 +24,13 @@
 #
 # Pretty URLs: if localias (https://github.com/peterldowns/localias) is
 # installed and its daemon is running, each worktree is also served at
-# http://<worktree-name>.localhost
+# http://<worktree-name>.localhost. Aliases left behind by deleted worktrees
+# are pruned automatically on the next server start.
 
 set -eu
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -159,12 +160,36 @@ cmd_run() {
   PORT="$port" exec sh -c "$cmd"
 }
 
+# Remove localias entries left behind by deleted worktrees. An alias is stale
+# when it points into wtdev's port range, no current worktree here has its
+# name, and nothing is serving on its port. The last check protects other
+# repos' live aliases; an idle one removed by mistake comes back on that
+# repo's next `run`.
+prune_aliases() {
+  command -v localias >/dev/null 2>&1 || return 0
+  base="${WTDEV_BASE_PORT:-3000}"
+  range="${WTDEV_PORT_RANGE:-999}"
+  names=$(worktree_paths | while IFS= read -r d; do basename "$d"; done)
+  localias list 2>/dev/null | awk -F' -> ' 'NF == 2 { print $1, $2 }' \
+  | while read -r alias port; do
+    case "$alias" in *.localhost) ;; *) continue ;; esac
+    case "$port" in ''|*[!0-9]*) continue ;; esac
+    if [ "$port" -le "$base" ] || [ "$port" -gt $((base + range)) ]; then continue; fi
+    if printf '%s\n' "$names" | grep -Fqx "${alias%.localhost}"; then continue; fi
+    if curl -sf -o /dev/null --max-time 1 "http://localhost:$port/" 2>/dev/null; then continue; fi
+    if localias rm "$alias" >/dev/null 2>&1; then
+      echo "wtdev: removed stale alias $alias"
+    fi
+  done
+}
+
 cmd_dashboard() {
   root=$(main_root)
   base="${WTDEV_BASE_PORT:-3000}"
   # Drop registrations whose directories are gone, so deleted worktrees
   # disappear from the dashboard without a manual prune.
   git worktree prune 2>/dev/null || true
+  prune_aliases
 
   out="${1:-}"
   if [ -z "$out" ]; then
