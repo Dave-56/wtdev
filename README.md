@@ -82,6 +82,8 @@ Writes `worktrees.html` (into `public/` if you have one, so your dev server serv
 
 If [localias](https://github.com/peterldowns/localias) is installed and running (`brew install peterldowns/localias/localias && localias start`), `wtdev run` also registers `http://<worktree-name>.localhost` for each worktree. `my-feature.localhost` beats `localhost:3417`.
 
+Aliases don't leak: when a worktree is deleted, its alias is pruned automatically on the next server start. An alias is only removed if it's inside wtdev's port range, matches no current worktree, and nothing is serving on its port — so live aliases (including other repos') are never touched.
+
 ## Config
 
 | Env var | Default | |
