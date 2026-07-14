@@ -71,8 +71,10 @@ The `npm install` guard makes fresh worktrees self-sufficient — `git worktree 
 ## Dashboard
 
 ```sh
-wtdev dashboard
+wtdev dashboard   # manual regenerate; run/up also regenerate it automatically
 ```
+
+Every `wtdev run` / `wtdev up` rewrites the dashboard (after `git worktree prune`), so deleted worktrees drop off the page as soon as any server starts — no manual upkeep. The page shows live servers by default; idle checkouts collapse behind a "show N idle checkouts" toggle.
 
 Writes `worktrees.html` (into `public/` if you have one, so your dev server serves it) listing every worktree's branch, last commit, and URL, with a green/red live-status dot probed from the page every 5 seconds. Re-run it when you add or remove worktrees.
 

@@ -112,6 +112,7 @@ cmd_up() {
   here=$(this_root)
   port=$(cmd_port)
   name=$(basename "$here")
+  ( cmd_dashboard ) >/dev/null 2>&1 || true
   if curl -sf -o /dev/null --max-time 2 "http://localhost:$port/" 2>/dev/null; then
     echo "wtdev: already serving http://localhost:$port ($name)"
     return 0
@@ -125,6 +126,10 @@ cmd_run() {
   here=$(this_root)
   port=$(cmd_port)
   name=$(basename "$here")
+
+  # Keep the dashboard current without a manual regenerate step: every server
+  # start rewrites it, so removed worktrees drop off as soon as anything runs.
+  ( cmd_dashboard ) >/dev/null 2>&1 || true
 
   # Worktrees start without gitignored env files; borrow them from the main
   # checkout so the app boots without manual copying.
@@ -157,6 +162,9 @@ cmd_run() {
 cmd_dashboard() {
   root=$(main_root)
   base="${WTDEV_BASE_PORT:-3000}"
+  # Drop registrations whose directories are gone, so deleted worktrees
+  # disappear from the dashboard without a manual prune.
+  git worktree prune 2>/dev/null || true
 
   out="${1:-}"
   if [ -z "$out" ]; then
@@ -196,18 +204,30 @@ EOF
   .dot { display: inline-block; width: .6em; height: .6em; border-radius: 50%; margin-right: .45em; background: #999; }
   .up .dot { background: #34c759; } .down .dot { background: #ff3b30; }
   .down td { opacity: .55; }
+  body:not(.show-idle) tr.down { display: none; }
   .desc { opacity: .75; font-size: .9em; }
   code { font-size: .85em; }
   a { color: inherit; }
+  #idle { margin-top: .75rem; font-size: .85em; opacity: .65; background: none; border: none; padding: 0; cursor: pointer; color: inherit; text-decoration: underline; display: none; }
 </style>
-<h1>$project worktrees <small>status probed live &middot; regenerate on add/remove</small></h1>
+<h1>$project worktrees <small>live servers &middot; auto-refreshes on server start</small></h1>
 <table>
   <thead><tr><th>checkout</th><th>branch</th><th>last commit</th><th>url</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
+<button id="idle"></button>
 <script>
 const worktrees = [$rows];
 const tbody = document.getElementById('rows');
+const idleBtn = document.getElementById('idle');
+idleBtn.onclick = () => { document.body.classList.toggle('show-idle'); renderIdle(); };
+function renderIdle() {
+  const n = worktrees.filter(w => w.el.className === 'down').length;
+  idleBtn.style.display = n ? 'inline' : 'none';
+  idleBtn.textContent = document.body.classList.contains('show-idle')
+    ? 'hide ' + n + ' idle checkout' + (n === 1 ? '' : 's')
+    : 'show ' + n + ' idle checkout' + (n === 1 ? '' : 's');
+}
 for (const w of worktrees) {
   const tr = document.createElement('tr');
   const url = 'http://localhost:' + w.port + '/';
@@ -227,6 +247,7 @@ async function probe() {
       w.el.className = 'up';
     } catch { w.el.className = 'down'; }
   }));
+  renderIdle();
 }
 probe();
 setInterval(probe, 5000);
