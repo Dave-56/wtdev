@@ -9,7 +9,7 @@ If you run coding agents (Claude Code, Cursor, etc.) in parallel git worktrees, 
 - main checkout → `3000`
 - every linked worktree → a stable port in `3001–3999`, hashed from its path
 
-Same worktree, same port, every time — across restarts, across agents, with zero coordination and zero state.
+Same worktree, same port, every time — across restarts, across agents, with zero coordination and zero state. In the rare case two worktrees hash to the same port, the later one (in `git worktree list` order) simply takes the next free port, so ports stay unique without anything to configure.
 
 ## Install
 
@@ -25,6 +25,7 @@ It's a single dependency-free POSIX shell script; you can also just copy it into
 ```sh
 wtdev run                 # start the dev server on this checkout's port
 wtdev run pnpm dev        # ...with an explicit command ({port} is substituted)
+wtdev up                  # start it in the background if not already serving
 wtdev port                # print this checkout's port
 wtdev list                # every worktree with its branch + port
 wtdev dashboard           # generate a live-status HTML dashboard
@@ -39,6 +40,12 @@ The easiest setup is to route your dev script through it, so agents and humans a
 `wtdev run` exports `PORT` (which Next.js, Vite via config, CRA, Remix, and most Node servers respect) and also substitutes `{port}` into the command for tools that want a flag.
 
 It also copies gitignored env files (`.env`, `.env.local` by default) from the main checkout into fresh worktrees, since those never come along with `git worktree add`.
+
+`wtdev up` is `run` for automation: it starts the server in the background (logging to `.wtdev.log`) only if the checkout's port isn't already serving, and prints the URL either way. Wire it into an agent's session-start hook and every session begins with its dev URL ready:
+
+```json
+{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh scripts/wtdev up" } ] } ] } }
+```
 
 ## Dashboard
 

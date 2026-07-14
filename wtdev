@@ -4,9 +4,11 @@
 # The main checkout always gets the base port (default 3000). Every linked
 # worktree gets a deterministic port hashed from its path (default 3001-3999),
 # so the same worktree always comes back on the same port and parallel
-# worktrees never fight over 3000.
+# worktrees never fight over 3000. If two worktrees hash to the same port,
+# the later one (in `git worktree list` order) takes the next free port.
 #
 #   wtdev run [cmd...]   start the dev server on this checkout's port
+#   wtdev up             start it in the background if not already serving
 #   wtdev port           print this checkout's port
 #   wtdev list           list all worktrees with branch + port
 #   wtdev dashboard      generate a live-status HTML dashboard
@@ -27,7 +29,7 @@
 set -eu
 
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -48,16 +50,34 @@ this_root() {
   git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }
 
-# port_for <worktree-path> <main-root>
-port_for() {
+# Emit "port<TAB>path" for every worktree, main checkout first. Each worktree
+# wants the port hashed from its path; when two paths hash to the same port,
+# the later one (in `git worktree list` order) probes forward to the next free
+# port, so every worktree gets a unique port and unaffected ones keep theirs.
+port_map() {
   base="${WTDEV_BASE_PORT:-3000}"
   range="${WTDEV_PORT_RANGE:-999}"
-  if [ "$1" = "$2" ]; then
-    echo "$base"
-  else
-    hash=$(printf '%s' "$1" | cksum | cut -d' ' -f1)
-    echo $((base + 1 + hash % range))
-  fi
+  root=$(main_root)
+  used=":"
+  worktree_paths | while IFS= read -r dir; do
+    if [ "$dir" = "$root" ]; then
+      port="$base"
+    else
+      hash=$(printf '%s' "$dir" | cksum | cut -d' ' -f1)
+      port=$((base + 1 + hash % range))
+      while case "$used" in *":$port:"*) true ;; *) false ;; esac; do
+        port=$((port + 1))
+        [ "$port" -gt $((base + range)) ] && port=$((base + 1))
+      done
+    fi
+    used="$used$port:"
+    printf '%s\t%s\n' "$port" "$dir"
+  done
+}
+
+# port_for <worktree-path>
+port_for() {
+  port_map | awk -F'\t' -v d="$1" '$2 == d { print $1; exit }'
 }
 
 json_escape() {
@@ -73,18 +93,31 @@ cmd_port() {
   if [ -n "${PORT:-}" ]; then
     echo "$PORT"
   else
-    port_for "$(this_root)" "$(main_root)"
+    port_for "$(this_root)"
   fi
 }
 
 cmd_list() {
-  root=$(main_root)
-  worktree_paths | while IFS= read -r dir; do
+  port_map | while IFS='	' read -r port dir; do
     [ -d "$dir" ] || continue
     branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
-    port=$(port_for "$dir" "$root")
     printf '%-30s %-30s %s\n' "$(basename "$dir")" "${branch:-(detached)}" "$port"
   done
+}
+
+# Start the dev server in the background if this checkout's port isn't already
+# serving, and print the URL either way. Idempotent, so it's safe to call from
+# editor/agent session-start hooks.
+cmd_up() {
+  here=$(this_root)
+  port=$(cmd_port)
+  name=$(basename "$here")
+  if curl -sf -o /dev/null --max-time 2 "http://localhost:$port/" 2>/dev/null; then
+    echo "wtdev: already serving http://localhost:$port ($name)"
+    return 0
+  fi
+  nohup sh "$0" run >> "$here/.wtdev.log" 2>&1 &
+  echo "wtdev: starting http://localhost:$port ($name) — log: $here/.wtdev.log"
 }
 
 cmd_run() {
@@ -135,18 +168,17 @@ cmd_dashboard() {
 
   project=$(basename "$root")
   rows=""
-  while IFS= read -r dir; do
+  while IFS='	' read -r port dir; do
     [ -d "$dir" ] || continue
     name=$(basename "$dir")
     [ "$dir" = "$root" ] && name="main checkout"
     branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
     desc=$(git -C "$dir" log -1 --format=%s 2>/dev/null || true)
-    port=$(port_for "$dir" "$root")
     alias=""
     [ "$port" -ne "$base" ] && alias="$(basename "$dir").localhost"
     rows="$rows{\"name\":\"$(json_escape "$name")\",\"branch\":\"$(json_escape "$branch")\",\"desc\":\"$(json_escape "$desc")\",\"port\":$port,\"alias\":\"$alias\"},"
   done <<EOF
-$(worktree_paths)
+$(port_map)
 EOF
 
   cat > "$out" <<EOF
@@ -206,6 +238,7 @@ EOF
 
 case "${1:-}" in
   run) shift; cmd_run "$@" ;;
+  up) cmd_up ;;
   port) cmd_port ;;
   list) cmd_list ;;
   dashboard) shift || true; cmd_dashboard "${1:-}" ;;
