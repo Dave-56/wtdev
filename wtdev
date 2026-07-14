@@ -60,18 +60,26 @@ port_map() {
   range="${WTDEV_PORT_RANGE:-999}"
   root=$(main_root)
   used=":"
+  map=""
   worktree_paths | while IFS= read -r dir; do
     if [ "$dir" = "$root" ]; then
       port="$base"
     else
       hash=$(printf '%s' "$dir" | cksum | cut -d' ' -f1)
       port=$((base + 1 + hash % range))
+      want=$port
       while case "$used" in *":$port:"*) true ;; *) false ;; esac; do
         port=$((port + 1))
-        [ "$port" -gt $((base + range)) ] && port=$((base + 1))
+        if [ "$port" -gt $((base + range)) ]; then port=$((base + 1)); fi
       done
+      if [ "$port" -ne "$want" ]; then
+        other=$(printf '%s' "$map" | awk -F'\t' -v p="$want" '$1 == p { print $2; exit }')
+        echo "wtdev: note: $dir hashed to port $want, taken by $other; using $port" >&2
+      fi
     fi
     used="$used$port:"
+    map="$map$port	$dir
+"
     printf '%s\t%s\n' "$port" "$dir"
   done
 }
