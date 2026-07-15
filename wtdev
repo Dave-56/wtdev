@@ -89,6 +89,22 @@ port_for() {
   port_map | awk -F'\t' -v d="$1" '$2 == d { print $1; exit }'
 }
 
+# Working directory of the process listening on <port>; empty if nothing is
+# listening or lsof is unavailable. Lets callers tell "some server answers"
+# apart from "THIS worktree's server answers".
+port_owner() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  pid=$(lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 0
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+}
+
+# owned_by <owner-cwd> <worktree-root>: true if owner is the worktree (or a
+# subdirectory of it, for dev servers that chdir).
+owned_by() {
+  case "$1" in "$2"|"$2"/*) true ;; *) false ;; esac
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -123,6 +139,10 @@ cmd_up() {
   name=$(basename "$here")
   ( cmd_dashboard ) >/dev/null 2>&1 || true
   if curl -sf -o /dev/null --max-time 2 "http://localhost:$port/" 2>/dev/null; then
+    owner=$(port_owner "$port")
+    if [ -n "$owner" ] && ! owned_by "$owner" "$here"; then
+      die "port $port answers, but the server runs from $owner — not this worktree. Stop it or set PORT."
+    fi
     echo "wtdev: already serving http://localhost:$port ($name)"
     return 0
   fi
@@ -140,12 +160,23 @@ cmd_run() {
   # start rewrites it, so removed worktrees drop off as soon as anything runs.
   ( cmd_dashboard ) >/dev/null 2>&1 || true
 
+  # A green port isn't necessarily OUR port: refuse to hand the URL to a
+  # server that actually runs from some other directory (orphaned worktree,
+  # unrelated process). Our own already-running server is left to the app's
+  # usual address-in-use error.
+  owner=$(port_owner "$port")
+  if [ -n "$owner" ] && ! owned_by "$owner" "$here"; then
+    die "port $port is taken by a server running from $owner — not this worktree. Stop it or set PORT."
+  fi
+
   # Worktrees start without gitignored env files; borrow them from the main
-  # checkout so the app boots without manual copying.
+  # checkout so the app boots without manual copying. Owner-only perms: these
+  # are secrets, and worktrees multiply the copies.
   if [ "$here" != "$root" ]; then
     for f in ${WTDEV_ENV_FILES:-.env .env.local}; do
       if [ -f "$root/$f" ] && [ ! -e "$here/$f" ]; then
         cp "$root/$f" "$here/$f"
+        chmod 600 "$here/$f"
         echo "wtdev: copied $f from main checkout"
       fi
     done
@@ -217,7 +248,12 @@ cmd_dashboard() {
     desc=$(git -C "$dir" log -1 --format=%s 2>/dev/null || true)
     alias=""
     [ "$port" -ne "$base" ] && alias="$(basename "$dir").localhost"
-    rows="$rows{\"name\":\"$(json_escape "$name")\",\"branch\":\"$(json_escape "$branch")\",\"desc\":\"$(json_escape "$desc")\",\"port\":$port,\"alias\":\"$alias\"},"
+    # Liveness isn't identity: note when the port's listener runs from a
+    # different directory, so the page can flag "up, but wrong checkout".
+    wrong=""
+    owner=$(port_owner "$port")
+    if [ -n "$owner" ] && ! owned_by "$owner" "$dir"; then wrong="$owner"; fi
+    rows="$rows{\"name\":\"$(json_escape "$name")\",\"branch\":\"$(json_escape "$branch")\",\"desc\":\"$(json_escape "$desc")\",\"port\":$port,\"alias\":\"$alias\",\"wrong\":\"$(json_escape "$wrong")\"},"
   done <<EOF
 $(port_map)
 EOF
@@ -236,6 +272,8 @@ EOF
   th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .55; }
   .dot { display: inline-block; width: .6em; height: .6em; border-radius: 50%; margin-right: .45em; background: #999; }
   .up .dot { background: #34c759; } .down .dot { background: #ff3b30; }
+  .warn .dot { background: #ff9f0a; }
+  .warn-note { display: block; font-size: .8em; color: #b25000; opacity: .9; }
   .down td { opacity: .55; }
   body:not(.show-idle) tr.down { display: none; }
   .desc { opacity: .75; font-size: .9em; }
@@ -266,7 +304,8 @@ for (const w of worktrees) {
   const url = 'http://localhost:' + w.port + '/';
   const links = '<a href="' + url + '">localhost:' + w.port + '</a>' +
     (w.alias ? ' &middot; <a href="http://' + w.alias + '/">' + w.alias + '</a>' : '');
-  tr.innerHTML = '<td><span class="dot"></span>' + w.name + '</td>' +
+  const warn = w.wrong ? '<span class="warn-note">&#9888; port serves ' + w.wrong + '</span>' : '';
+  tr.innerHTML = '<td><span class="dot"></span>' + w.name + warn + '</td>' +
     '<td><code>' + w.branch + '</code></td>' +
     '<td class="desc">' + w.desc + '</td>' +
     '<td>' + links + '</td>';
@@ -277,7 +316,7 @@ async function probe() {
   await Promise.all(worktrees.map(async w => {
     try {
       await fetch('http://localhost:' + w.port + '/', { mode: 'no-cors', signal: AbortSignal.timeout(3000) });
-      w.el.className = 'up';
+      w.el.className = w.wrong ? 'warn' : 'up';
     } catch { w.el.className = 'down'; }
   }));
   renderIdle();

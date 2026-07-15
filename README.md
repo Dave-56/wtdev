@@ -41,7 +41,7 @@ The easiest setup is to route your dev script through it, so agents and humans a
 
 `wtdev run` exports `PORT` (which Next.js, Vite via config, CRA, Remix, and most Node servers respect) and also substitutes `{port}` into the command for tools that want a flag.
 
-It also copies gitignored env files (`.env`, `.env.local` by default) from the main checkout into fresh worktrees, since those never come along with `git worktree add`.
+It also copies gitignored env files (`.env`, `.env.local` by default) from the main checkout into fresh worktrees, since those never come along with `git worktree add` — allowlisted via `WTDEV_ENV_FILES`, never overwriting an existing file, with owner-only permissions (`chmod 600`) since these are usually secrets.
 
 ## Zero-touch dev servers for agent sessions
 
@@ -93,7 +93,7 @@ wtdev dashboard   # manual regenerate; run/up also regenerate it automatically
 
 Every `wtdev run` / `wtdev up` rewrites the dashboard (after `git worktree prune`), so deleted worktrees drop off the page as soon as any server starts — no manual upkeep. The page shows live servers by default; idle checkouts collapse behind a "show N idle checkouts" toggle.
 
-Writes `worktrees.html` (into `public/` if you have one, so your dev server serves it) listing every worktree's branch, last commit, and URL, with a green/red live-status dot probed from the page every 5 seconds. Re-run it when you add or remove worktrees.
+Writes `worktrees.html` (into `public/` if you have one, so your dev server serves it) listing every worktree's branch, last commit, and URL, with a live-status dot probed from the page every 5 seconds: green means this worktree's server is up, amber means *something* answers on the port but it runs from a different directory (an orphaned server from a deleted worktree, say) — liveness isn't identity. `wtdev run` and `up` do the same check and refuse to adopt a port owned by another directory. Re-run it when you add or remove worktrees.
 
 ## Pretty URLs
 
